@@ -135,7 +135,7 @@ def calculate_relevance_similarity(recommendations, products_df, ratings_df, use
     user_product_ids = set(user_ratings['id_product'])
     user_product_indices = [products_df.index.get_loc(pid) for pid in user_product_ids if pid in products_df.index]
     if not user_product_indices:
-        return {product['id_product']: 0.0 for product in inspirations}
+        return {product['id_product']: 0.0 for product in recommendations}
     
     test_user_ratings = test_df[(test_df['username'] == username) & (test_df['rating'] >= rating_threshold)]
     test_product_ids = set(test_user_ratings['id_product'])
