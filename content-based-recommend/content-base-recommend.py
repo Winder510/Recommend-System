@@ -26,20 +26,14 @@ class RemoveStopwordsTransformer(BaseEstimator, TransformerMixin):
             return [' '.join(word for word in x.split() if word not in stopwords) for x in X]
         else:
             return ' '.join(word for word in X.split() if word not in stopwords)
+
 class WordTokenizeTransformer(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         return self
     
     def transform(self, X):
-        return [word_tokenize(x, format="text") for x in X] if isinstance(X, list) else word_tokenize(x, format="text")
+        return [word_tokenize(x, format="text") for x in X] if isinstance(X, list) else word_tokenize(X, format="text")
 
-class RemoveStopwordsTransformer(BaseEstimator, TransformerMixin):
-    def fit(self, X, y=None):
-        return self
-    
-    def transform(self, X):
-        stopwords = st.session_state.get('stopwords', [])
-        return [' '.join(word for word in x.split() if word not in stopwords) for x in X] if isinstance(X, list) else ' '.join(word for word in X.split() if word not in stopwords)
 class RemoveSpecialCharsTransformer(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         return self
@@ -50,6 +44,7 @@ class RemoveSpecialCharsTransformer(BaseEstimator, TransformerMixin):
             return [re.sub(r'\W+', ' ', x) for x in X]
         else:
             return re.sub(r'\W+', ' ', X)
+
 # Tải stopwords
 @st.cache_data
 def get_stopwords_list(stop_file_path):
@@ -86,7 +81,6 @@ def preprocess_description(products_df, stopwords):
     products_df['description'] = products_df.apply(enhance_description, axis=1)
     st.session_state['stopwords'] = stopwords
     
-    # Sử dụng Pipeline.transform để xử lý toàn bộ cột description
     processed_descriptions = text_preprocessing_pipeline.transform(products_df['description'].tolist())
     products_df['processed_description'] = processed_descriptions
     
@@ -246,19 +240,6 @@ def main():
     
     vectorizer, description_matrix = tfidf_data
     
-    st.write(f"Số sản phẩm trong products_df: {len(products_df)}")
-    st.write(f"Số đánh giá trong train_df: {len(train_df)}")
-    st.write(f"Số đánh giá trong test_df: {len(test_df)}")
-    st.write(f"Các danh mục trong products_df: {products_df['category'].unique().tolist()}")
-    
-    common_ids = set(train_df['id_product']).intersection(set(products_df.index))
-    if not common_ids:
-        st.error("Không có id_product chung giữa train_df và products_df.")
-        return
-    
-    st.write(f"Số id_product chung: {len(common_ids)}/{len(products_df)}")
-    st.write(f"Số người dùng trong train_df: {train_df['username'].nunique()}")
-    
     st.write("### Gợi ý sản phẩm")
     username = st.selectbox("Chọn người dùng:", train_df['username'].unique().tolist())
     num_recommendations = st.slider("Số lượng sản phẩm gợi ý:", 1, 20, 5)
@@ -279,6 +260,19 @@ def main():
                 st.write("---")
         
         if recommendations:
+            serendipity_score = calculate_serendipity(
+                recommendations, products_df, train_df, username, rating_threshold, description_matrix, test_df
+            )
+            
+            st.write(f"### Kết quả đánh giá")
+            st.write(f"- **Serendipity**: {serendipity_score:.4f}")
+            if serendipity_score >= 0.7:
+                st.success("Serendipity cao: Danh sách khuyến nghị rất bất ngờ và phù hợp!")
+            elif serendipity_score >= 0.4:
+                st.info("Serendipity trung bình: Danh sách khuyến nghị có sự bất ngờ vừa phải và phù hợp.")
+            else:
+                st.warning("Serendipity thấp: Danh sách khuyến nghị thiếu bất ngờ hoặc không đủ phù hợp.")
+            
             st.write(f"### Sản phẩm được gợi ý (Top {num_recommendations}):")
             for product in recommendations:
                 st.write(f"**{product['name_product']}**")
@@ -286,21 +280,6 @@ def main():
                 st.write(f"**Danh mục**: {product['category']}")
                 st.image(product['img'], width=200)
                 st.write("---")
-            
-            serendipity_score = calculate_serendipity(
-                recommendations, products_df, train_df, username, rating_threshold, description_matrix, test_df
-            )
-            
-            st.write("### Kết quả đánh giá")
-            st.write(f"- **Số sản phẩm được khuyến nghị**: {len(recommendations)}")
-            st.write(f"- **Serendipity**: {serendipity_score:.4f}")
-            
-            if serendipity_score >= 0.7:
-                st.success("Serendipity cao: Danh sách khuyến nghị rất bất ngờ và phù hợp!")
-            elif serendipity_score >= 0.4:
-                st.info("Serendipity trung bình: Danh sách khuyến nghị có sự bất ngờ vừa phải và phù hợp.")
-            else:
-                st.warning("Serendipity thấp: Danh sách khuyến nghị thiếu bất ngờ hoặc không đủ phù hợp.")
         else:
             st.warning(f"Không tìm thấy gợi ý cho người dùng {username}.")
 
