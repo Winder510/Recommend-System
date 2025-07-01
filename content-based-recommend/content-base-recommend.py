@@ -2,30 +2,63 @@ import pandas as pd
 import streamlit as st
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.pipeline import Pipeline
+from sklearn.base import BaseEstimator, TransformerMixin
 import re
 import numpy as np
 from underthesea import word_tokenize
 
+# Transformer tùy chỉnh cho từng bước xử lý văn bản
+class LowercaseTransformer(BaseEstimator, TransformerMixin):
+    def fit(self, X, y=None):
+        return self
+    
+    def transform(self, X):
+        return [x.lower() for x in X] if isinstance(X, list) else X.lower()
+
+class RemoveSpecialCharsTransformer(BaseEstimator, TransformerMixin):
+    def fit(self, X, y=None):
+        return self
+    
+    def transform(self, X):
+        return [re.sub(r'\W+', ' ', x) for x in X] if isinstance(X, list) else re.sub(r'\W+', ' ', X)
+
+class WordTokenizeTransformer(BaseEstimator, TransformerMixin):
+    def fit(self, X, y=None):
+        return self
+    
+    def transform(self, X):
+        return [word_tokenize(x, format="text") for x in X] if isinstance(X, list) else word_tokenize(x, format="text")
+
+class RemoveStopwordsTransformer(BaseEstimator, TransformerMixin):
+    def fit(self, X, y=None):
+        return self
+    
+    def transform(self, X):
+        stopwords = st.session_state.get('stopwords', [])
+        return [' '.join(word for word in x.split() if word not in stopwords) for x in X] if isinstance(X, list) else ' '.join(word for word in x.split() if word not in stopwords)
+
 # Tải stopwords
+@st.cache_data
 def get_stopwords_list(stop_file_path):
     try:
         with open(stop_file_path, 'r', encoding="utf-8") as f:
-            stopwords = f.readlines()
-            stop_set = set(m.strip() for m in stopwords)
-            return list(frozenset(stop_set))
+            stopwords = frozenset(m.strip() for m in f.readlines())
+            return list(stopwords)
     except FileNotFoundError:
         st.error("File stopwords không tồn tại.")
         return []
 
-# Tiền xử lý văn bản
-def preprocess_text(data, stopwords):
-    data = data.lower()
-    data = re.sub(r'\W+', ' ', data)
-    data = word_tokenize(data, format="text")
-    data = ' '.join([word for word in data.split() if word not in stopwords])
-    return data
+# Pipeline tiền xử lý văn bản
+text_preprocessing_pipeline = Pipeline([
+    ('lowercase', LowercaseTransformer()),
+    ('remove_special_chars', RemoveSpecialCharsTransformer()),
+    ('word_tokenize', WordTokenizeTransformer()),
+    ('remove_stopwords', RemoveStopwordsTransformer())
+])
 
 # Xử lý mô tả không đầy đủ
+@st.cache_data
 def preprocess_description(products_df, stopwords):
     products_df = products_df.copy()
     if 'description' not in products_df.columns:
@@ -36,10 +69,17 @@ def preprocess_description(products_df, stopwords):
         desc = row['description']
         if pd.isna(desc) or desc.strip().lower() in ['không có mô tả', 'xem thêm'] or len(desc.split()) < 5:
             desc = f"{row['name_product']} {row['category']}"
-        return preprocess_text(desc, stopwords)
+        return desc
     
-    products_df['processed_description'] = products_df.apply(enhance_description, axis=1)
+    products_df['description'] = products_df.apply(enhance_description, axis=1)
+    st.session_state['stopwords'] = stopwords
+    
+    # Sử dụng Pipeline.transform để xử lý toàn bộ cột description
+    processed_descriptions = text_preprocessing_pipeline.transform(products_df['description'].tolist())
+    products_df['processed_description'] = processed_descriptions
+    
     products_df = products_df[products_df['processed_description'].str.strip() != '']
+    
     if products_df.index.duplicated().any():
         st.warning("Duplicate id_product found in products_df. Keeping first occurrence.")
         products_df = products_df[~products_df.index.duplicated(keep='first')]
@@ -47,12 +87,13 @@ def preprocess_description(products_df, stopwords):
     return products_df
 
 # Tạo ma trận TF-IDF
+@st.cache_data
 def create_tfidf_matrix(processed_texts, max_features=1000):
     vectorizer = TfidfVectorizer(max_features=max_features)
     tfidf_matrix = vectorizer.fit_transform(processed_texts)
     return vectorizer, tfidf_matrix
 
-# Tải và tiền xử lý dữ liệu với cache
+# Tải và tiền xử lý dữ liệu
 @st.cache_data
 def load_and_preprocess_data(products_path, train_path, test_path, stopwords_path):
     try:
@@ -77,7 +118,7 @@ def load_and_preprocess_data(products_path, train_path, test_path, stopwords_pat
     return products_df, train_df, test_df, stopwords, (vectorizer, description_matrix)
 
 # Hàm gợi ý sản phẩm
-def get_content_based_recommendations(username, products_df, ratings_df, num_recommendations=5, stopwords=None, rating_threshold=3, description_matrix=None):
+def get_content_based_recommendations(username, products_df, ratings_df, num_recommendations=5, rating_threshold=3, description_matrix=None):
     user_ratings = ratings_df[(ratings_df['username'] == username) & (ratings_df['rating'] >= rating_threshold)]
     if user_ratings.empty:
         st.warning(f"Không tìm thấy đánh giá cho người dùng {username} với rating >= {rating_threshold}.")
@@ -89,41 +130,21 @@ def get_content_based_recommendations(username, products_df, ratings_df, num_rec
         st.warning(f"Không tìm thấy sản phẩm nào của người dùng {username} trong products_df.")
         return [], []
     
-    # Lấy thông tin sản phẩm đã đánh giá
     rated_products = products_df[products_df.index.isin(user_product_ids)][['name_product', 'description', 'category', 'img']].reset_index().to_dict('records')
     
     user_profile = np.asarray(description_matrix[user_product_indices].mean(axis=0))
     cosine_sim = cosine_similarity(user_profile, description_matrix)[0]
     
-    rated_product_ids = user_product_ids
-    product_indices = []
-    category_count = {}
-    max_per_category = 3
+    sim_df = pd.DataFrame({
+        'id_product': products_df.index,
+        'cosine_sim': cosine_sim
+    })
+    sim_df = sim_df[~sim_df['id_product'].isin(user_product_ids)]
+    sim_df = sim_df.merge(products_df[['category']], left_on='id_product', right_index=True)
+    sim_df = sim_df.sort_values('cosine_sim', ascending=False)
+    sim_df = sim_df.groupby('category').head(3).head(num_recommendations)
     
-    for idx, score in sorted(enumerate(cosine_sim), key=lambda x: x[1], reverse=True):
-        product_id = products_df.index[idx]
-        if product_id not in rated_product_ids:
-            try:
-                category = products_df.loc[product_id, 'category']
-                if not isinstance(category, str):
-                    st.warning(f"Invalid category for product_id {product_id}: {category}")
-                    continue
-                if category not in category_count:
-                    category_count[category] = 0
-                if category_count[category] < max_per_category:
-                    product_indices.append(idx)
-                    category_count[category] += 1
-                if len(product_indices) >= num_recommendations:
-                    break
-            except KeyError:
-                st.warning(f"Product ID {product_id} not found in products_df.")
-                continue
-    
-    if not product_indices:
-        st.warning(f"Không có sản phẩm gợi ý hợp lệ cho người dùng {username}.")
-        return [], rated_products
-    
-    recommendations = products_df.iloc[product_indices][['name_product', 'description', 'category', 'img']].reset_index().to_dict('records')
+    recommendations = products_df.loc[sim_df['id_product']][['name_product', 'description', 'category', 'img']].reset_index().to_dict('records')
     return recommendations, rated_products
 
 # Tính relevance dựa trên độ tương đồng
@@ -144,13 +165,8 @@ def calculate_relevance_similarity(recommendations, products_df, ratings_df, use
     
     user_profile = np.asarray(description_matrix[all_user_product_indices].mean(axis=0))
     
-    recommended_indices = []
-    for product in recommendations:
-        product_id = product['id_product']
-        if product_id in products_df.index:
-            recommended_indices.append(products_df.index.get_loc(product_id))
-        else:
-            st.warning(f"Product ID {product_id} not found in products_df.")
+    recommended_indices = [products_df.index.get_loc(product['id_product']) 
+                         for product in recommendations if product['id_product'] in products_df.index]
     
     if not recommended_indices:
         return {product['id_product']: 0.0 for product in recommendations}
@@ -187,13 +203,8 @@ def calculate_serendipity(recommendations, products_df, ratings_df, username, ra
     all_user_product_indices = [products_df.index.get_loc(pid) for pid in all_user_product_ids if pid in products_df.index]
     
     user_profile = np.asarray(description_matrix[all_user_product_indices].mean(axis=0))
-    recommended_indices = []
-    for product in recommendations:
-        product_id = product['id_product']
-        if product_id in products_df.index:
-            recommended_indices.append(products_df.index.get_loc(product_id))
-        else:
-            st.warning(f"Product ID {product_id} not found in products_df.")
+    recommended_indices = [products_df.index.get_loc(product['id_product']) 
+                         for product in recommendations if product['id_product'] in products_df.index]
     
     if not recommended_indices:
         return 0.0
@@ -201,15 +212,10 @@ def calculate_serendipity(recommendations, products_df, ratings_df, username, ra
     similarities = cosine_similarity(description_matrix[recommended_indices], user_profile).flatten()
     relevance_scores = calculate_relevance_similarity(recommendations, products_df, ratings_df, username, rating_threshold, description_matrix, test_df)
     
-    serendipity_sum = 0
-    for idx, similarity in zip(recommended_indices, similarities):
-        unexpectedness = 1 - similarity
-        product_id = products_df.index[idx]
-        relevance = relevance_scores.get(product_id, 0.0)
-        serendipity_sum += unexpectedness * relevance
+    serendipity_sum = sum((1 - similarity) * relevance_scores.get(products_df.index[idx], 0.0) 
+                         for idx, similarity in zip(recommended_indices, similarities))
     
-    serendipity = serendipity_sum / len(recommended_indices) if recommended_indices else 0.0
-    return serendipity
+    return serendipity_sum / len(recommended_indices) if recommended_indices else 0.0
 
 # Ứng dụng Streamlit
 def main():
@@ -248,7 +254,7 @@ def main():
     
     if st.button("Gợi ý"):
         recommendations, rated_products = get_content_based_recommendations(
-            username, products_df, train_df, num_recommendations, stopwords, rating_threshold, description_matrix
+            username, products_df, train_df, num_recommendations, rating_threshold, description_matrix
         )
         
         if rated_products:
