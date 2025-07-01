@@ -39,7 +39,7 @@ class RemoveStopwordsTransformer(BaseEstimator, TransformerMixin):
     
     def transform(self, X):
         stopwords = st.session_state.get('stopwords', [])
-        return [' '.join(word for word in x.split() if word not in stopwords) for x in X] if isinstance(X, list) else ' '.join(word for word in x.split() if word not in stopwords)
+        return [' '.join(word for word in x.split() if word not in stopwords) for x in X] if isinstance(X, list) else ' '.join(word for word in X.split() if word not in stopwords)
 class RemoveSpecialCharsTransformer(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         return self
