@@ -16,13 +16,16 @@ class LowercaseTransformer(BaseEstimator, TransformerMixin):
     def transform(self, X):
         return [x.lower() for x in X] if isinstance(X, list) else X.lower()
 
-class RemoveSpecialCharsTransformer(BaseEstimator, TransformerMixin):
+class RemoveStopwordsTransformer(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         return self
     
     def transform(self, X):
-        return [re.sub(r'\W+', ' ', x) for x in X] if isinstance(X, list) else re.sub(r'\W+', ' ', X)
-
+        stopwords = st.session_state.get('stopwords', [])
+        if isinstance(X, list):
+            return [' '.join(word for word in x.split() if word not in stopwords) for x in X]
+        else:
+            return ' '.join(word for word in X.split() if word not in stopwords)
 class WordTokenizeTransformer(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         return self
@@ -37,7 +40,16 @@ class RemoveStopwordsTransformer(BaseEstimator, TransformerMixin):
     def transform(self, X):
         stopwords = st.session_state.get('stopwords', [])
         return [' '.join(word for word in x.split() if word not in stopwords) for x in X] if isinstance(X, list) else ' '.join(word for word in x.split() if word not in stopwords)
-
+class RemoveSpecialCharsTransformer(BaseEstimator, TransformerMixin):
+    def fit(self, X, y=None):
+        return self
+    
+    def transform(self, X):
+        import re
+        if isinstance(X, list):
+            return [re.sub(r'\W+', ' ', x) for x in X]
+        else:
+            return re.sub(r'\W+', ' ', X)
 # Tải stopwords
 @st.cache_data
 def get_stopwords_list(stop_file_path):
